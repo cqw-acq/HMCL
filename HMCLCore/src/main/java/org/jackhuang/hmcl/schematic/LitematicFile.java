@@ -28,6 +28,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -35,56 +36,79 @@ import java.util.zip.GZIPInputStream;
  * @see <a href="https://litemapy.readthedocs.io/en/v0.9.0b0/litematics.html">The Litematic file format</a>
  */
 public final class LitematicFile {
+    private static final String TAG_VERSION = "Version";
+    private static final String TAG_METADATA = "Metadata";
+    private static final String TAG_REGIONS = "Regions";
+    private static final String TAG_SUB_VERSION = "SubVersion";
+    private static final String TAG_MINECRAFT_DATA_VERSION = "MinecraftDataVersion";
 
-    private static int tryGetInt(Tag tag) {
-        return tag instanceof IntTag ? ((IntTag) tag).getValue() : 0;
+    private static final String TAG_PREVIEW_IMAGE = "PreviewImageData";
+    private static final String TAG_NAME = "Name";
+    private static final String TAG_AUTHOR = "Author";
+    private static final String TAG_DESCRIPTION = "Description";
+    private static final String TAG_TIME_CREATED = "TimeCreated";
+    private static final String TAG_TIME_MODIFIED = "TimeModified";
+    private static final String TAG_TOTAL_BLOCKS = "TotalBlocks";
+    private static final String TAG_TOTAL_VOLUME = "TotalVolume";
+    private static final String TAG_ENCLOSING_SIZE = "EnclosingSize";
+    private static final String TAG_SIZE_X = "x";
+    private static final String TAG_SIZE_Y = "y";
+    private static final String TAG_SIZE_Z = "z";
+
+    private static int getIntValue(Tag tag, int defaultValue) {
+        return tag instanceof IntTag ? ((IntTag) tag).getValue() : defaultValue;
     }
 
-    private static @Nullable Instant tryGetLongTimestamp(Tag tag) {
-        if (tag instanceof LongTag) {
-            return Instant.ofEpochMilli(((LongTag) tag).getValue());
-        }
-        return null;
+    private static @Nullable Instant getInstantValue(Tag tag) {
+        return tag instanceof LongTag ? Instant.ofEpochMilli(((LongTag) tag).getValue()) : null;
     }
 
-    private static @Nullable String tryGetString(Tag tag) {
+    private static @Nullable String getStringValue(Tag tag) {
         return tag instanceof StringTag ? ((StringTag) tag).getValue() : null;
     }
 
     public static LitematicFile load(Path file) throws IOException {
+        Objects.requireNonNull(file, "File path cannot be null");
 
-        CompoundTag root;
+        final CompoundTag root;
         try (InputStream in = new GZIPInputStream(Files.newInputStream(file))) {
             root = (CompoundTag) NBTIO.readTag(in);
         }
 
-        Tag versionTag = root.get("Version");
-        if (versionTag == null)
-            throw new IOException("Version tag not found");
-        else if (!(versionTag instanceof IntTag))
-            throw new IOException("Version tag is not an integer");
+        final IntTag versionTag = getRequiredTag(root, TAG_VERSION, IntTag.class, file);
+        final CompoundTag metadataTag = getRequiredTag(root, TAG_METADATA, CompoundTag.class, file);
 
-        Tag metadataTag = root.get("Metadata");
-        if (metadataTag == null)
-            throw new IOException("Metadata tag not found");
-        else if (!(metadataTag instanceof CompoundTag))
-            throw new IOException("Metadata tag is not a compound tag");
+        int regionCount = 0;
+        Tag regionsTag = root.get(TAG_REGIONS);
+        if (regionsTag instanceof CompoundTag) {
+            regionCount = ((CompoundTag) regionsTag).size();
+        }
 
-        int regions = 0;
-        Tag regionsTag = root.get("Regions");
-        if (regionsTag instanceof CompoundTag)
-            regions = ((CompoundTag) regionsTag).size();
-
-        return new LitematicFile(file, (CompoundTag) metadataTag,
-                ((IntTag) versionTag).getValue(),
-                tryGetInt(root.get("SubVersion")),
-                tryGetInt(root.get("MinecraftDataVersion")),
-                regions
+        return new LitematicFile(
+                file,
+                metadataTag,
+                versionTag.getValue(),
+                getIntValue(root.get(TAG_SUB_VERSION), 0),
+                getIntValue(root.get(TAG_MINECRAFT_DATA_VERSION), 0),
+                regionCount
         );
     }
 
-    private final @NotNull Path file;
+    private static <T extends Tag> T getRequiredTag(CompoundTag parent, String name,
+                                                    Class<T> type, Path file) throws IOException {
+        Tag tag = parent.get(name);
+        if (tag == null) {
+            throw new IOException(String.format("Missing required tag '%s' in file: %s", name, file));
+        }
+        if (!type.isInstance(tag)) {
+            throw new IOException(String.format(
+                    "Expected %s for '%s' but got %s in file: %s",
+                    type.getSimpleName(), name, tag.getClass().getSimpleName(), file));
+        }
+        return type.cast(tag);
+    }
 
+    private final @NotNull Path file;
     private final int version;
     private final int subVersion;
     private final int minecraftDataVersion;
@@ -99,41 +123,46 @@ public final class LitematicFile {
     private final int totalVolume;
     private final Point3D enclosingSize;
 
-    private LitematicFile(@NotNull Path file, @NotNull CompoundTag metadata,
-                          int version, int subVersion, int minecraftDataVersion, int regionCount) {
+    private LitematicFile(
+            @NotNull Path file,
+            @NotNull CompoundTag metadata,
+            int version,
+            int subVersion,
+            int minecraftDataVersion,
+            int regionCount
+    ) {
         this.file = file;
         this.version = version;
         this.subVersion = subVersion;
         this.minecraftDataVersion = minecraftDataVersion;
         this.regionCount = regionCount;
 
-        Tag previewImageData = metadata.get("PreviewImageData");
-        this.previewImageData = previewImageData instanceof IntArrayTag
-                ? ((IntArrayTag) previewImageData).getValue()
-                : null;
 
-        this.name = tryGetString(metadata.get("Name"));
-        this.author = tryGetString(metadata.get("Author"));
-        this.description = tryGetString(metadata.get("Description"));
-        this.timeCreated = tryGetLongTimestamp(metadata.get("TimeCreated"));
-        this.timeModified = tryGetLongTimestamp(metadata.get("TimeModified"));
-        this.totalBlocks = tryGetInt(metadata.get("TotalBlocks"));
-        this.totalVolume = tryGetInt(metadata.get("TotalVolume"));
+        Tag previewTag = metadata.get(TAG_PREVIEW_IMAGE);
+        this.previewImageData = (previewTag instanceof IntArrayTag)
+                ? ((IntArrayTag) previewTag).getValue() : null;
 
+        this.name = getStringValue(metadata.get(TAG_NAME));
+        this.author = getStringValue(metadata.get(TAG_AUTHOR));
+        this.description = getStringValue(metadata.get(TAG_DESCRIPTION));
+        this.timeCreated = getInstantValue(metadata.get(TAG_TIME_CREATED));
+        this.timeModified = getInstantValue(metadata.get(TAG_TIME_MODIFIED));
+        this.totalBlocks = getIntValue(metadata.get(TAG_TOTAL_BLOCKS), 0);
+        this.totalVolume = getIntValue(metadata.get(TAG_TOTAL_VOLUME), 0);
 
-        Point3D enclosingSize = null;
-        Tag enclosingSizeTag = metadata.get("EnclosingSize");
-        if (enclosingSizeTag instanceof CompoundTag) {
-            CompoundTag list = (CompoundTag) enclosingSizeTag;
-            int x = tryGetInt(list.get("x"));
-            int y = tryGetInt(list.get("y"));
-            int z = tryGetInt(list.get("z"));
+        Point3D size = null;
+        Tag sizeTag = metadata.get(TAG_ENCLOSING_SIZE);
+        if (sizeTag instanceof CompoundTag) {
+            CompoundTag sizeCompound = (CompoundTag) sizeTag;
+            int x = getIntValue(sizeCompound.get(TAG_SIZE_X), -1);
+            int y = getIntValue(sizeCompound.get(TAG_SIZE_Y), -1);
+            int z = getIntValue(sizeCompound.get(TAG_SIZE_Z), -1);
 
-            if (x >= 0 && y >= 0 && z >= 0)
-                enclosingSize = new Point3D(x, y, z);
+            if (x >= 0 && y >= 0 && z >= 0) {
+                size = new Point3D(x, y, z);
+            }
         }
-        this.enclosingSize = enclosingSize;
-
+        this.enclosingSize = size;
     }
 
     public @NotNull Path getFile() {
